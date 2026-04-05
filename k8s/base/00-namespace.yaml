@@ -1,0 +1,42 @@
+---
+# ─── Namespace ────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform
+  labels:
+    name: platform
+    istio-injection: enabled
+---
+# ─── ResourceQuota ────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: platform-quota
+  namespace: platform
+spec:
+  hard:
+    requests.cpu:    "16"
+    requests.memory: 32Gi
+    limits.cpu:      "32"
+    limits.memory:   64Gi
+    pods:            "100"
+---
+# ─── LimitRange ───────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: platform-limits
+  namespace: platform
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu:    500m
+        memory: 512Mi
+      defaultRequest:
+        cpu:    100m
+        memory: 256Mi
+      max:
+        cpu:    "4"
+        memory: 4Gi

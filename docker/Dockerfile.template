@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1.4
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM eclipse-temurin:17-jdk-alpine AS builder
+WORKDIR /workspace
+
+# Cache Maven deps separately from source code
+COPY --link mvnw .
+COPY --link .mvn .mvn
+COPY --link pom.xml .
+
+# Copy only the module we are building + its parent and common-lib
+COPY --link common-lib/pom.xml         common-lib/pom.xml
+COPY --link common-lib/src             common-lib/src
+ARG SERVICE_NAME
+COPY --link ${SERVICE_NAME}/pom.xml    ${SERVICE_NAME}/pom.xml
+COPY --link ${SERVICE_NAME}/src        ${SERVICE_NAME}/src
+
+RUN --mount=type=cache,target=/root/.m2 \
+    chmod +x mvnw && \
+    ./mvnw -pl common-lib,${SERVICE_NAME} \
+           -am install -DskipTests -q
+
+# ── Stage 2: Extract Spring Boot layers ───────────────────────────────────────
+FROM eclipse-temurin:17-jdk-alpine AS extractor
+WORKDIR /workspace
+ARG SERVICE_NAME
+COPY --from=builder /workspace/${SERVICE_NAME}/target/*.jar app.jar
+RUN java -Djarmode=layertools -jar app.jar extract
+
+# ── Stage 3: Production image ─────────────────────────────────────────────────
+FROM eclipse-temurin:17-jre-alpine AS runtime
+
+# Security: non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+
+WORKDIR /app
+
+# Copy layered Spring Boot content (cache-friendly order)
+COPY --from=extractor /workspace/dependencies          ./dependencies
+COPY --from=extractor /workspace/spring-boot-loader    ./spring-boot-loader
+COPY --from=extractor /workspace/snapshot-dependencies ./snapshot-dependencies
+COPY --from=extractor /workspace/application           ./application
+
+# JVM tuning for containers
+ENV JAVA_OPTS="\
+  -XX:+UseContainerSupport \
+  -XX:MaxRAMPercentage=75.0 \
+  -XX:InitialRAMPercentage=50.0 \
+  -XX:+UseG1GC \
+  -XX:+UseStringDeduplication \
+  -Djava.security.egd=file:/dev/./urandom \
+  -Dfile.encoding=UTF-8"
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD wget -qO- http://localhost:8080/actuator/health || exit 1
+
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS org.springframework.boot.loader.JarLauncher"]

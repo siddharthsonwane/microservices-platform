@@ -1,0 +1,264 @@
+name: "CI/CD — Build, Push & Deploy"
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION:    ap-south-1
+  ECR_REGISTRY:  ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-south-1.amazonaws.com
+  IMAGE_TAG:     ${{ github.sha }}
+
+jobs:
+  # ────────────────────────────────────────────────────────────────
+  # 1. Test
+  # ────────────────────────────────────────────────────────────────
+  test:
+    name: "Unit & Integration Tests"
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      kafka:
+        image: confluentinc/cp-kafka:7.5.0
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_BROKER_ID: 1
+          KAFKA_ZOOKEEPER_CONNECT: ""
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+          cache: maven
+
+      - name: Run tests
+        run: ./mvnw test -pl common-lib,order-service,payment-service,inventory-service,saga-orchestrator -am
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: "**/target/surefire-reports/**"
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+
+  # ────────────────────────────────────────────────────────────────
+  # 2. Build & Push Docker images to ECR
+  # ────────────────────────────────────────────────────────────────
+  build-push:
+    name: "Build & Push — ${{ matrix.service }}"
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+
+    strategy:
+      matrix:
+        service:
+          - service-discovery
+          - api-gateway
+          - order-service
+          - payment-service
+          - inventory-service
+          - notification-service
+          - saga-orchestrator
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context:   .
+          file:      ${{ matrix.service }}/Dockerfile
+          push:      true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/platform/${{ matrix.service }}:${{ env.IMAGE_TAG }}
+            ${{ env.ECR_REGISTRY }}/platform/${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to:   type=gha,mode=max,scope=${{ matrix.service }}
+          build-args: |
+            SERVICE_NAME=${{ matrix.service }}
+
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref:    "${{ env.ECR_REGISTRY }}/platform/${{ matrix.service }}:${{ env.IMAGE_TAG }}"
+          format:       sarif
+          output:       trivy-${{ matrix.service }}.sarif
+          severity:     CRITICAL,HIGH
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+
+  # ────────────────────────────────────────────────────────────────
+  # 3a. Deploy to EKS
+  # ────────────────────────────────────────────────────────────────
+  deploy-eks:
+    name: "Deploy to EKS"
+    needs: build-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name platform-eks \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Replace image tags in manifests
+        run: |
+          find k8s/ -name "*.yaml" -exec \
+            sed -i "s|\${ECR_REGISTRY}|${{ env.ECR_REGISTRY }}|g; \
+                    s|\${IMAGE_TAG}|${{ env.IMAGE_TAG }}|g; \
+                    s|\${ACM_CERTIFICATE_ARN}|${{ secrets.ACM_CERTIFICATE_ARN }}|g" {} +
+
+      - name: Deploy namespace & config
+        run: kubectl apply -f k8s/base/00-namespace.yaml -f k8s/base/01-configmaps-secrets.yaml
+
+      - name: Deploy service-discovery
+        run: |
+          kubectl apply -f k8s/base/02-service-discovery.yaml
+          kubectl rollout status deployment/service-discovery -n platform --timeout=120s
+
+      - name: Deploy API Gateway
+        run: |
+          kubectl apply -f k8s/base/03-api-gateway.yaml
+          kubectl rollout status deployment/api-gateway -n platform --timeout=120s
+
+      - name: Deploy microservices
+        run: |
+          kubectl apply -f k8s/base/04-microservices.yaml
+          for svc in order-service payment-service inventory-service notification-service saga-orchestrator; do
+            kubectl rollout status deployment/$svc -n platform --timeout=120s
+          done
+
+      - name: Verify deployments
+        run: |
+          kubectl get pods -n platform
+          kubectl get services -n platform
+          kubectl get ingress -n platform
+
+      - name: Notify Slack on success
+        if: success()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {"text": "✅ Deployed ${{ github.sha }} to EKS production"}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {"text": "❌ EKS deployment failed for ${{ github.sha }}"}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # ────────────────────────────────────────────────────────────────
+  # 3b. Deploy to ECS (alternative path, develop branch)
+  # ────────────────────────────────────────────────────────────────
+  deploy-ecs:
+    name: "Deploy to ECS (staging)"
+    needs: build-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+
+    strategy:
+      matrix:
+        service:
+          - api-gateway
+          - order-service
+          - payment-service
+          - inventory-service
+          - notification-service
+          - saga-orchestrator
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Get current ECS task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition platform-${{ matrix.service }} \
+            --query taskDefinition \
+            > task-def-${{ matrix.service }}.json
+
+      - name: Update image in task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def-${{ matrix.service }}.json
+          container-name:  ${{ matrix.service }}
+          image:           ${{ env.ECR_REGISTRY }}/platform/${{ matrix.service }}:${{ env.IMAGE_TAG }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition:  ${{ steps.task-def.outputs.task-definition }}
+          service:          ${{ matrix.service }}
+          cluster:          platform-ecs
+          wait-for-service-stability: true

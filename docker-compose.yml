@@ -1,0 +1,412 @@
+version: "3.9"
+
+# ─── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  platform-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# ─── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  postgres_orders:    {}
+  postgres_payments:  {}
+  postgres_inventory: {}
+  postgres_saga:      {}
+  kafka_data:         {}
+  zookeeper_data:     {}
+  redis_data:         {}
+  prometheus_data:    {}
+  grafana_data:       {}
+  loki_data:          {}
+
+# ─── Services ──────────────────────────────────────────────────────────────────
+services:
+
+  # ── ZooKeeper ────────────────────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+    networks: [platform-net]
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Kafka ─────────────────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks: [platform-net]
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # ── Kafka UI (Kafdrop) ────────────────────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on: [kafka]
+    ports:
+      - "9000:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks: [platform-net]
+
+  # ── Redis (Rate Limiting) ─────────────────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: redis
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks: [platform-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── PostgreSQL: Orders ────────────────────────────────────────────────────────
+  postgres-orders:
+    image: postgres:16-alpine
+    container_name: postgres-orders
+    environment:
+      POSTGRES_DB:       orders_db
+      POSTGRES_USER:     orders_user
+      POSTGRES_PASSWORD: orders_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_orders:/var/lib/postgresql/data
+    networks: [platform-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders_user -d orders_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── PostgreSQL: Payments ──────────────────────────────────────────────────────
+  postgres-payments:
+    image: postgres:16-alpine
+    container_name: postgres-payments
+    environment:
+      POSTGRES_DB:       payments_db
+      POSTGRES_USER:     payments_user
+      POSTGRES_PASSWORD: payments_pass
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_payments:/var/lib/postgresql/data
+    networks: [platform-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments_user -d payments_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── PostgreSQL: Inventory ─────────────────────────────────────────────────────
+  postgres-inventory:
+    image: postgres:16-alpine
+    container_name: postgres-inventory
+    environment:
+      POSTGRES_DB:       inventory_db
+      POSTGRES_USER:     inventory_user
+      POSTGRES_PASSWORD: inventory_pass
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_inventory:/var/lib/postgresql/data
+    networks: [platform-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inventory_user -d inventory_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── PostgreSQL: Saga ──────────────────────────────────────────────────────────
+  postgres-saga:
+    image: postgres:16-alpine
+    container_name: postgres-saga
+    environment:
+      POSTGRES_DB:       saga_db
+      POSTGRES_USER:     saga_user
+      POSTGRES_PASSWORD: saga_pass
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_saga:/var/lib/postgresql/data
+    networks: [platform-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saga_user -d saga_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── OpenTelemetry Collector ───────────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.91.0
+    container_name: otel-collector
+    command: ["--config=/etc/otel-collector-config.yml"]
+    volumes:
+      - ./monitoring/otel-collector-config.yml:/etc/otel-collector-config.yml
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus metrics
+    networks: [platform-net]
+    depends_on: [prometheus]
+
+  # ── Prometheus ────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+      - --web.enable-lifecycle
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [platform-net]
+
+  # ── Grafana ───────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: grafana
+    environment:
+      GF_SECURITY_ADMIN_USER:     admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_USERS_ALLOW_SIGN_UP:     "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    ports:
+      - "3000:3000"
+    networks: [platform-net]
+    depends_on: [prometheus, loki]
+
+  # ── Loki (log aggregation) ────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: loki
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./monitoring/loki/config.yml:/etc/loki/config.yml
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    networks: [platform-net]
+
+  # ── Promtail (log shipper) ────────────────────────────────────────────────────
+  promtail:
+    image: grafana/promtail:2.9.0
+    container_name: promtail
+    volumes:
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./monitoring/promtail/config.yml:/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml
+    networks: [platform-net]
+    depends_on: [loki]
+
+  # ── Jaeger (distributed tracing UI) ──────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14268:14268"  # Jaeger collector HTTP
+    networks: [platform-net]
+
+  # ── Service Discovery (Eureka) ────────────────────────────────────────────────
+  service-discovery:
+    build:
+      context: .
+      dockerfile: service-discovery/Dockerfile
+    container_name: service-discovery
+    ports:
+      - "8761:8761"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      EUREKA_HOST: service-discovery
+    networks: [platform-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8761/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ── API Gateway ───────────────────────────────────────────────────────────────
+  api-gateway:
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    container_name: api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      EUREKA_URL:             http://admin:admin123@service-discovery:8761/eureka/
+      REDIS_HOST:             redis
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318/v1/traces
+    depends_on:
+      service-discovery:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [platform-net]
+
+  # ── Order Service ─────────────────────────────────────────────────────────────
+  order-service:
+    build:
+      context: .
+      dockerfile: order-service/Dockerfile
+    container_name: order-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST:                postgres-orders
+      DB_NAME:                orders_db
+      DB_USER:                orders_user
+      DB_PASSWORD:            orders_pass
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_URL:             http://admin:admin123@service-discovery:8761/eureka/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318/v1/traces
+    depends_on:
+      service-discovery:
+        condition: service_healthy
+      postgres-orders:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks: [platform-net]
+
+  # ── Payment Service ───────────────────────────────────────────────────────────
+  payment-service:
+    build:
+      context: .
+      dockerfile: payment-service/Dockerfile
+    container_name: payment-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST:                postgres-payments
+      DB_USER:                payments_user
+      DB_PASSWORD:            payments_pass
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_URL:             http://admin:admin123@service-discovery:8761/eureka/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318/v1/traces
+    depends_on:
+      service-discovery:
+        condition: service_healthy
+      postgres-payments:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks: [platform-net]
+
+  # ── Inventory Service ─────────────────────────────────────────────────────────
+  inventory-service:
+    build:
+      context: .
+      dockerfile: inventory-service/Dockerfile
+    container_name: inventory-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST:                postgres-inventory
+      DB_USER:                inventory_user
+      DB_PASSWORD:            inventory_pass
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_URL:             http://admin:admin123@service-discovery:8761/eureka/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318/v1/traces
+    depends_on:
+      service-discovery:
+        condition: service_healthy
+      postgres-inventory:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks: [platform-net]
+
+  # ── Notification Service ──────────────────────────────────────────────────────
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    container_name: notification-service
+    environment:
+      SPRING_PROFILES_ACTIVE:       docker
+      KAFKA_BOOTSTRAP_SERVERS:       kafka:29092
+      EUREKA_URL:                    http://admin:admin123@service-discovery:8761/eureka/
+      OTEL_EXPORTER_OTLP_ENDPOINT:  http://otel-collector:4318/v1/traces
+    depends_on:
+      service-discovery:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks: [platform-net]
+
+  # ── Saga Orchestrator ─────────────────────────────────────────────────────────
+  saga-orchestrator:
+    build:
+      context: .
+      dockerfile: saga-orchestrator/Dockerfile
+    container_name: saga-orchestrator
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST:                postgres-saga
+      DB_USER:                saga_user
+      DB_PASSWORD:            saga_pass
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_URL:             http://admin:admin123@service-discovery:8761/eureka/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318/v1/traces
+    depends_on:
+      service-discovery:
+        condition: service_healthy
+      postgres-saga:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks: [platform-net]

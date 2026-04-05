@@ -1,0 +1,377 @@
+---
+# ═══════════════════════════════════════════════════════════════════
+# ORDER SERVICE
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: order-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: order-service
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path:   "/actuator/prometheus"
+        prometheus.io/port:   "8081"
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: order-service
+          image: ${ECR_REGISTRY}/order-service:${IMAGE_TAG}
+          ports:
+            - containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: platform-config
+          env:
+            - name: DB_HOST
+              value: "postgres-orders"
+            - name: DB_NAME
+              value: "orders_db"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: platform-db-secrets
+                  key: orders-db-user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: platform-db-secrets
+                  key: orders-db-pass
+          resources:
+            requests: { cpu: 300m, memory: 512Mi }
+            limits:   { cpu: "2",  memory: 2Gi  }
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8081
+            initialDelaySeconds: 40
+            periodSeconds:       10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8081
+            initialDelaySeconds: 60
+            periodSeconds:       15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: platform
+spec:
+  selector:
+    app: order-service
+  ports:
+    - port: 8081
+      targetPort: 8081
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: order-service-hpa
+  namespace: platform
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: order-service
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: AverageUtilization
+          averageUtilization: 70
+---
+# ═══════════════════════════════════════════════════════════════════
+# PAYMENT SERVICE
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "8082"
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: payment-service
+          image: ${ECR_REGISTRY}/payment-service:${IMAGE_TAG}
+          ports:
+            - containerPort: 8082
+          envFrom:
+            - configMapRef:
+                name: platform-config
+          env:
+            - name: DB_HOST
+              value: "postgres-payments"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: platform-db-secrets
+                  key: payments-db-user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: platform-db-secrets
+                  key: payments-db-pass
+          resources:
+            requests: { cpu: 300m, memory: 512Mi }
+            limits:   { cpu: "2",  memory: 2Gi  }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8082 }
+            initialDelaySeconds: 40
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8082 }
+            initialDelaySeconds: 60
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: platform
+spec:
+  selector:
+    app: payment-service
+  ports:
+    - port: 8082
+      targetPort: 8082
+---
+# ═══════════════════════════════════════════════════════════════════
+# INVENTORY SERVICE
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-service
+  namespace: platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: inventory-service
+  template:
+    metadata:
+      labels:
+        app: inventory-service
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "8083"
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: inventory-service
+          image: ${ECR_REGISTRY}/inventory-service:${IMAGE_TAG}
+          ports:
+            - containerPort: 8083
+          envFrom:
+            - configMapRef:
+                name: platform-config
+          env:
+            - name: DB_HOST
+              value: "postgres-inventory"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: platform-db-secrets
+                  key: inventory-db-user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: platform-db-secrets
+                  key: inventory-db-pass
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits:   { cpu: "2",  memory: 1Gi  }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8083 }
+            initialDelaySeconds: 40
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8083 }
+            initialDelaySeconds: 60
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory-service
+  namespace: platform
+spec:
+  selector:
+    app: inventory-service
+  ports:
+    - port: 8083
+      targetPort: 8083
+---
+# ═══════════════════════════════════════════════════════════════════
+# NOTIFICATION SERVICE
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "8084"
+    spec:
+      containers:
+        - name: notification-service
+          image: ${ECR_REGISTRY}/notification-service:${IMAGE_TAG}
+          ports:
+            - containerPort: 8084
+          envFrom:
+            - configMapRef:
+                name: platform-config
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: "1",  memory: 512Mi }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8084 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: platform
+spec:
+  selector:
+    app: notification-service
+  ports:
+    - port: 8084
+      targetPort: 8084
+---
+# ═══════════════════════════════════════════════════════════════════
+# SAGA ORCHESTRATOR
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: saga-orchestrator
+  namespace: platform
+spec:
+  replicas: 1   # Single instance prevents duplicate saga starts; use leader election for HA
+  selector:
+    matchLabels:
+      app: saga-orchestrator
+  template:
+    metadata:
+      labels:
+        app: saga-orchestrator
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "8085"
+    spec:
+      terminationGracePeriodSeconds: 60  # Allow in-flight sagas to complete
+      containers:
+        - name: saga-orchestrator
+          image: ${ECR_REGISTRY}/saga-orchestrator:${IMAGE_TAG}
+          ports:
+            - containerPort: 8085
+          envFrom:
+            - configMapRef:
+                name: platform-config
+          env:
+            - name: DB_HOST
+              value: "postgres-saga"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: platform-db-secrets
+                  key: saga-db-user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: platform-db-secrets
+                  key: saga-db-pass
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits:   { cpu: "2",  memory: 1Gi  }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8085 }
+            initialDelaySeconds: 40
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8085 }
+            initialDelaySeconds: 60
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: saga-orchestrator
+  namespace: platform
+spec:
+  selector:
+    app: saga-orchestrator
+  ports:
+    - port: 8085
+      targetPort: 8085
+---
+# ─── PodDisruptionBudgets for all services ────────────────────────
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: order-service-pdb
+  namespace: platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: order-service
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payment-service-pdb
+  namespace: platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: payment-service
