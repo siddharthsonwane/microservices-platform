@@ -9,7 +9,7 @@
         <version>1.0.0</version>
     </parent>
     <artifactId>saga-orchestrator</artifactId>
-    <n>Saga Orchestrator</n>
+    <name>Saga Orchestrator</name>
 
     <dependencies>
         <dependency>

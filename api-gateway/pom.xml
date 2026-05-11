@@ -9,7 +9,7 @@
         <version>1.0.0</version>
     </parent>
     <artifactId>api-gateway</artifactId>
-    <n>API Gateway</n>
+    <name>API Gateway</name>
 
     <dependencies>
         <dependency>

@@ -9,7 +9,7 @@
         <version>1.0.0</version>
     </parent>
     <artifactId>service-discovery</artifactId>
-    <n>Service Discovery - Eureka Server</n>
+    <name>Service Discovery - Eureka Server</name>
 
     <dependencies>
         <dependency>

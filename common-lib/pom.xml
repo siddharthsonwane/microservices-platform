@@ -11,7 +11,7 @@
 
     <artifactId>common-lib</artifactId>
     <packaging>jar</packaging>
-    <n>Common Library</n>
+    <name>Common Library</name>
 
     <dependencies>
         <dependency>

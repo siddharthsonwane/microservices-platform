@@ -20,7 +20,7 @@ command -v mvn         >/dev/null 2>&1 || warn  "Maven not found; using mvnw"
 
 # Build all services
 info "Building all services..."
-./mvnw clean package -DskipTests -q \
+mvn clean package -DskipTests -q \
   || error "Maven build failed"
 
 info "Starting infrastructure (Kafka, Redis, PostgreSQL, Monitoring)..."

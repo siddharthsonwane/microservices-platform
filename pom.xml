@@ -19,6 +19,7 @@
         <module>inventory-service</module>
         <module>notification-service</module>
         <module>saga-orchestrator</module>
+        <module>auth-service</module>
     </modules>
 
     <parent>
@@ -127,6 +128,7 @@
                             <path>
                                 <groupId>org.projectlombok</groupId>
                                 <artifactId>lombok</artifactId>
+                                <version>${lombok.version}</version>
                             </path>
                             <path>
                                 <groupId>org.mapstruct</groupId>

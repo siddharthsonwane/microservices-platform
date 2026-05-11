@@ -245,7 +245,8 @@ services:
     volumes:
       - /var/log:/var/log:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - ./monitoring/promtail/config.yml:/etc/promtail/config.yml
+      - ./monitoring/promtail:/etc/promtail
+      #- ./monitoring/promtail/config.yml:/etc/promtail/config.yml
     command: -config.file=/etc/promtail/config.yml
     networks: [platform-net]
     depends_on: [loki]
@@ -408,5 +409,22 @@ services:
       postgres-saga:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+    networks: [platform-net]
+
+  # ── Auth Service ─────────────────────────────────────────────────────────────
+  auth-service:
+    build:
+      context: .
+      dockerfile: auth-service/Dockerfile
+    container_name: auth-service
+    ports:
+      - "8085:8085"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      EUREKA_URL: http://admin:admin123@service-discovery:8761/eureka/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318/v1/traces
+    depends_on:
+      service-discovery:
         condition: service_healthy
     networks: [platform-net]

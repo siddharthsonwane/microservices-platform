@@ -1,0 +1,16 @@
+server:
+  port: 8085
+
+spring:
+  application:
+    name: auth-service
+
+# Eureka
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://admin:admin123@localhost:8761/eureka/}
+    registry-fetch-interval-seconds: 5
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 10

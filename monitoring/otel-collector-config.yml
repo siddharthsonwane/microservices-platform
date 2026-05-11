@@ -10,33 +10,47 @@ processors:
   batch:
     timeout: 1s
     send_batch_size: 1024
+
   memory_limiter:
     check_interval: 1s
     limit_mib: 512
+    spike_limit_mib: 128
+
   resource:
     attributes:
-      - key: deployment.environment
-        value: local
+      - key: environment
+        value: docker
         action: upsert
 
 exporters:
-  jaeger:
-    endpoint: jaeger:14250
+  # Send traces to Jaeger via OTLP (jaeger exporter removed in otel-contrib 0.86+)
+  otlp/jaeger:
+    endpoint: jaeger:4317
     tls:
       insecure: true
+
+  # Expose metrics for Prometheus to scrape
   prometheus:
     endpoint: "0.0.0.0:8889"
-    namespace: platform
-  logging:
-    loglevel: warn
+    namespace: otel
+
+  # Debug logging (optional, remove in prod)
+  debug:
+    verbosity: basic
 
 service:
   pipelines:
     traces:
-      receivers:  [otlp]
-      processors: [memory_limiter, batch, resource]
-      exporters:  [jaeger, logging]
-    metrics:
-      receivers:  [otlp]
+      receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters:  [prometheus]
+      exporters: [otlp/jaeger]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
